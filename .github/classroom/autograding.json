@@ -1,0 +1,9 @@
+{
+  "tests": [
+    {
+      "name": "BankAccount: проверка функциональности и структуры",
+      "setup": "",
+      "run": "echo 'Autograding handled by GitHub Actions workflow.'"
+    }
+  ]
+}
