@@ -1,0 +1,406 @@
+name: Autograding Tests
+on:
+  - push
+  - repository_dispatch
+
+permissions:
+  checks: write
+  actions: read
+  contents: read
+
+jobs:
+  # JOB 1
+  run-autograding-tests:
+    name: Оценивание заданий
+    runs-on: ubuntu-latest
+    if: github.actor != 'github-classroom[bot]'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    
+    # Тест 1: Пополнение счета
+    - name: Тест 1 - Пополнение счета
+      id: test1
+      uses: classroom-resources/autograding-io-grader@v1
+      with:
+        test-name: Тест 1 - Пополнение счета
+        command: python tests/test_io.py
+        input: |
+          1000
+          200
+        expected-output: |
+          Баланс счёта: 1000 единиц
+          На счет зачислено: 200 единиц
+          Баланс счёта: 1200 единиц
+        comparison-method: exact
+        timeout: 5
+        max-score: 17
+    
+    # Тест 2: Снятие средств
+    - name: Тест 2 - Снятие средств
+      id: test2
+      uses: classroom-resources/autograding-io-grader@v1
+      with:
+        test-name: Тест 2 - Снятие средств
+        command: python tests/test_io.py
+        input: |
+          1000
+          -300
+        expected-output: |
+          Баланс счёта: 1000 единиц
+          Со счета снято: 300 единиц
+          Баланс счёта: 700 единиц
+        comparison-method: exact
+        timeout: 5
+        max-score: 17
+    
+    # Тест 3: Попытка снятия при недостатке средств
+    - name: Тест 3 - Недостаточно средств
+      id: test3
+      uses: classroom-resources/autograding-io-grader@v1
+      with:
+        test-name: Тест 3 - Недостаточно средств
+        command: python tests/test_io.py
+        input: |
+          1000
+          -1100
+        expected-output: |
+          Баланс счёта: 1000 единиц
+          Недостаточно средств на счете
+          Баланс счёта: 1000 единиц
+        comparison-method: exact
+        timeout: 5
+        max-score: 16
+
+    # НОВЫЙ ШАГ: Проверка структуры класса через AST
+    - name: Проверка структуры класса (AST анализ)
+      id: ast_check
+      run: |
+        echo "## 🔍 Проверка структуры класса BankAccount" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Ищем файл с классом BankAccount
+        BANK_FILE=""
+        if [ -f "task.py" ]; then
+          BANK_FILE="task.py"
+        elif [ -f "solution.py" ]; then
+          BANK_FILE="solution.py"
+        else
+          echo "❌ Не найден файл с классом BankAccount" >> $GITHUB_STEP_SUMMARY
+          echo "Проверяемые файлы: task.py, solution.py" >> $GITHUB_STEP_SUMMARY
+          echo "ast_score=0" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+        
+        echo "### Файл для анализа: $BANK_FILE" >> $GITHUB_STEP_SUMMARY
+        
+        # Запускаем проверку и сохраняем вывод в переменную
+        AST_OUTPUT=$(python tests/check_structure.py "$BANK_FILE" 2>&1)
+        echo "### Результаты AST анализа:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "$AST_OUTPUT" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Извлекаем баллы из вывода Python скрипта
+        POINTS_LINE=$(echo "$AST_OUTPUT" | grep "Итоговый балл:" || echo "Итоговый балл: 0/5")
+        POINTS=$(echo "$POINTS_LINE" | grep -o "[0-9]\+\.[0-9]*\|[0-9]\+" | head -1 | cut -d'.' -f1)
+        
+        if [ -z "$POINTS" ]; then
+          POINTS=0
+        fi
+        
+        echo "**Баллы за структуру класса:** **$POINTS / 5**" >> $GITHUB_STEP_SUMMARY
+        
+        # Сохраняем в outputs
+        echo "ast_points=$POINTS" >> $GITHUB_OUTPUT
+        echo "AST_POINTS=$POINTS" >> $GITHUB_ENV
+    
+    - name: Extract Scores
+      id: extract_scores
+      run: |
+        # Декодируем результаты из base64 и извлекаем score
+        decode_and_get_score() {
+          local encoded_result="$1"
+          echo "$encoded_result" | base64 -d | python3 -c "import sys, json; data=json.load(sys.stdin); print(data['tests'][0]['score'])"
+        }
+        
+        # Извлекаем баллы из IO тестов
+        TEST1_SCORE=$(decode_and_get_score '${{ steps.test1.outputs.result }}')
+        TEST2_SCORE=$(decode_and_get_score '${{ steps.test2.outputs.result }}')
+        TEST3_SCORE=$(decode_and_get_score '${{ steps.test3.outputs.result }}')
+        
+        # Получаем баллы за структуру (используем переменную окружения)
+        AST_SCORE="${AST_POINTS:-0}"
+        
+        # Убедимся что это числа
+        TEST1_SCORE=${TEST1_SCORE:-0}
+        TEST2_SCORE=${TEST2_SCORE:-0}
+        TEST3_SCORE=${TEST3_SCORE:-0}
+        AST_SCORE=${AST_SCORE:-0}
+        
+        # Сохраняем в outputs
+        echo "test1_score=$TEST1_SCORE" >> $GITHUB_OUTPUT
+        echo "test2_score=$TEST2_SCORE" >> $GITHUB_OUTPUT
+        echo "test3_score=$TEST3_SCORE" >> $GITHUB_OUTPUT
+        echo "ast_score=$AST_SCORE" >> $GITHUB_OUTPUT
+        
+        # Вычисляем итоги
+        TOTAL_POINTS=$((TEST1_SCORE + TEST2_SCORE + TEST3_SCORE + AST_SCORE))
+        echo "total_points=$TOTAL_POINTS" >> $GITHUB_OUTPUT
+        
+        # Также сохраняем в переменные окружения
+        echo "TEST1_SCORE=$TEST1_SCORE" >> $GITHUB_ENV
+        echo "TEST2_SCORE=$TEST2_SCORE" >> $GITHUB_ENV
+        echo "TEST3_SCORE=$TEST3_SCORE" >> $GITHUB_ENV
+        echo "AST_SCORE=$AST_SCORE" >> $GITHUB_ENV
+        echo "TOTAL_POINTS=$TOTAL_POINTS" >> $GITHUB_ENV
+    
+    - name: Generate Test Report
+      run: |
+        # Используем переменные окружения
+        TEST1_SCORE="${TEST1_SCORE:-0}"
+        TEST2_SCORE="${TEST2_SCORE:-0}"
+        TEST3_SCORE="${TEST3_SCORE:-0}"
+        AST_SCORE="${AST_SCORE:-0}"
+        TOTAL_POINTS="${TOTAL_POINTS:-0}"
+        
+        # Максимальные баллы
+        TEST1_MAX=17
+        TEST2_MAX=17
+        TEST3_MAX=16
+        AST_MAX=5
+        MAX_POINTS=$((TEST1_MAX + TEST2_MAX + TEST3_MAX + AST_MAX))
+        
+        # Определяем статусы
+        get_status() {
+          local score="$1"
+          local max="$2"
+          if [ "$score" -eq "$max" ]; then
+            echo "✅"
+          elif [ "$score" -gt 0 ]; then
+            echo "⚠️"
+          else
+            echo "❌"
+          fi
+        }
+        
+        TEST1_STATUS=$(get_status "$TEST1_SCORE" "$TEST1_MAX")
+        TEST2_STATUS=$(get_status "$TEST2_SCORE" "$TEST2_MAX")
+        TEST3_STATUS=$(get_status "$TEST3_SCORE" "$TEST3_MAX")
+        AST_STATUS=$(get_status "$AST_SCORE" "$AST_MAX")
+        
+        # Генерация отчета
+        echo "## 🏦 Результаты проверки: Класс BankAccount" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 🧪 Тесты ввода-вывода" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Тест | Баллы | Максимум | Статус |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|-------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        echo "| **Пополнение счета** | $TEST1_SCORE | $TEST1_MAX | $TEST1_STATUS |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Снятие средств** | $TEST2_SCORE | $TEST2_MAX | $TEST2_STATUS |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Недостаточно средств** | $TEST3_SCORE | $TEST3_MAX | $TEST3_STATUS |" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔍 Проверка структуры класса" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Критерий | Баллы | Максимум | Статус |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|-------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+        echo "| **AST анализ структуры** | $AST_SCORE | $AST_MAX | $AST_STATUS |" >> $GITHUB_STEP_SUMMARY
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Итоговая статистика
+        echo "### 📊 Итоговая статистика" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Всего баллов:** **$TOTAL_POINTS / $MAX_POINTS**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Расчет процента
+        if [ "$MAX_POINTS" -gt 0 ]; then
+          PERCENTAGE=$((TOTAL_POINTS * 100 / MAX_POINTS))
+        else
+          PERCENTAGE=0
+        fi
+        
+        # Сообщение в зависимости от результата
+        if [ "$TOTAL_POINTS" -eq "$MAX_POINTS" ]; then
+          echo "🎉 **Отличная работа! Все тесты пройдены!**" >> $GITHUB_STEP_SUMMARY
+        elif [ "$PERCENTAGE" -ge 80 ]; then
+          echo "👍 **Хороший результат!**" >> $GITHUB_STEP_SUMMARY
+        elif [ "$PERCENTAGE" -ge 60 ]; then
+          echo "⚠️ **Есть над чем поработать.**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Нужно серьезно поработать над заданием.**" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "*Автоматическая проверка завершена*" >> $GITHUB_STEP_SUMMARY
+
+    - name: Autograding Reporter
+      id: reporter
+      uses: classroom-resources/autograding-grading-reporter@v1
+      env:
+        TEST1_RESULTS: "${{ steps.test1.outputs.result }}"
+        TEST2_RESULTS: "${{ steps.test2.outputs.result }}"
+        TEST3_RESULTS: "${{ steps.test3.outputs.result }}"
+      with:
+        runners: test1,test2,test3
+
+  # JOB 2: ЛИНТЕРЫ (информация для студента, не влияет на оценку)
+  run-linters:
+    runs-on: ubuntu-latest
+    name: Проверка качества кода
+    # needs: run-tests
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install linters
+        run: |
+          echo "## 🔍 Code Quality Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "### Отчет предназначен только для ознакомительных целей!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+      
+          echo "📦 Installing linters..." >> $GITHUB_STEP_SUMMARY
+          pip install pylint flake8 ruff -q
+          echo "✅ Установлены: Pylint, Flake8, Ruff" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+      - name: Run linters
+        run: |
+          # Ищем ВСЕ .py файлы в репозитории. Исключаем и папку tests/, и файлы test_*.py в корне
+          files=$(git ls-files '*.py' | grep -v '^tests/' | grep -v '^test_.*\.py$')
+          if [ -z "$files" ]; then
+            echo "⚠️ Не найдены Python-файлы в твоём рекозитарии." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "*Примечание учащимся:*" >> $GITHUB_STEP_SUMMARY
+            echo "*проверка качества кода может повлиять на твою оценку.*" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+      
+          echo "Found $(echo "$files" | wc -l) Python file(s)." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+      
+          # PyLint
+          echo "### 🐍 PyLint Results (комплексная проверка)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          pylint $files --exit-zero --score=yes 2>&1 >> $GITHUB_STEP_SUMMARY || echo "PyLint failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+      
+          # Flake8
+          echo "### ✨ Flake8 Results (стиль и простые ошибки)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          flake8 $files --count --exit-zero --statistics 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Flake8 failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+      
+          # Ruff - САМЫЙ БЫСТРЫЙ И СОВРЕМЕННЫЙ
+          echo "### ⚡ Ruff Results (мгновенная проверка)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ruff check $files --statistics --exit-zero 2>&1 >> $GITHUB_STEP_SUMMARY || echo "Ruff failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+      
+          # Сводка
+          echo "### 📊 Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Tool | Result | Status | Описание |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+      
+          # PyLint score
+          pylint_score=$(pylint $files --exit-zero --score=yes 2>&1 | grep -o 'rated at [0-9.]*' | cut -d' ' -f3)
+          if [ -z "$pylint_score" ]; then
+            pylint_score="N/A"
+            pylint_status="❓"
+          elif awk "BEGIN {exit ($pylint_score < 8.0)}"; then
+            pylint_status="✅ Хорошо"
+          else
+            pylint_status="⚠️ Улучши"
+          fi
+          echo "| PyLint | $pylint_score/10 | $pylint_status | Комплексная проверка |" >> $GITHUB_STEP_SUMMARY
+      
+          # Flake8 count
+          flake8_errors=$(flake8 $files --count 2>/dev/null | tail -1)
+          if ! [[ "$flake8_errors" =~ ^[0-9]+$ ]]; then
+            flake8_errors="0"
+          fi
+          if [ "$flake8_errors" -eq 0 ]; then
+            flake8_status="✅ Отлично"
+          elif [ "$flake8_errors" -le 5 ]; then
+            flake8_status="⚠️ Средне"
+          else
+            flake8_status="❌ Много"
+          fi
+          echo "| Flake8 | $flake8_errors ошибок | $flake8_status | Стиль и простые ошибки |" >> $GITHUB_STEP_SUMMARY
+      
+          # Ruff count
+          # Просто считаем все не-warning строки, содержащие ".py:"
+          ruff_output=$(ruff check $files 2>&1 | grep -v "^warning:")
+          ruff_errors=$(echo "$ruff_output" | grep -i "found" | grep -oE '[0-9]+' | head -1)
+          
+          if [ -z "$ruff_errors" ]; then
+              ruff_errors="0"
+          fi
+
+          # Время выполнения Ruff
+          # ruff_time=$(time (ruff check $files --select=ALL --quiet >/dev/null 2>&1) 2>&1 | grep real | awk '{print $2}')
+          ruff_time=$( { time ruff check $files --quiet >/dev/null 2>&1; } 2>&1 | grep real | awk '{print $2}' )
+          
+          if [ "$ruff_errors" -eq 0 ]; then
+            ruff_status="✅ Отлично"
+          elif [ "$ruff_errors" -le 5 ]; then
+            ruff_status="⚠️ Средне"
+          else
+            ruff_status="❌ Много"
+          fi
+         
+          echo "| Ruff ⚡ | $ruff_errors ошибок | $ruff_status | Мгновенно ($ruff_time) |" >> $GITHUB_STEP_SUMMARY
+          # echo "Ruff выполнился за ${ruff_time} секунд, найдено ошибок: $ruff_errors"
+      
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Рекомендации на основе результатов
+          echo "### 💡 Рекомендации" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$ruff_errors" -gt 0 ]; then
+            echo "- 🔧 **Исправьте ошибки с помощью Ruff:**" >> $GITHUB_STEP_SUMMARY
+            echo '  ```bash' >> $GITHUB_STEP_SUMMARY
+            echo '  # Автоисправление большинства проблем' >> $GITHUB_STEP_SUMMARY
+            echo '  ruff check --fix .' >> $GITHUB_STEP_SUMMARY
+            echo '  ```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$flake8_errors" -gt "$ruff_errors" ]; then
+            echo "- 📝 **Flake8 нашел дополнительные ошибки стиля**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ ! "$pylint_score" = "N/A" ] && [ "$(echo "$pylint_score < 7.0" | bc -l 2>/dev/null || echo 0)" -eq 1 ]; then
+            echo "- 🎯 **Улучшите архитектуру кода (Pylint score < 7.0)**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "### 📚 Полезные ссылки" >> $GITHUB_STEP_SUMMARY
+          echo "- [Ruff Documentation](https://docs.astral.sh/ruff/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [PEP 8 Style Guide](https://peps.python.org/pep-0008/)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Pylint Tutorial](https://pylint.pycqa.org/en/latest/tutorial.html)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*Примечание учащимся:*" >> $GITHUB_STEP_SUMMARY
+          echo "*Проверка качества кода может повлиять на твою оценку.*" >> $GITHUB_STEP_SUMMARY
+          echo "*Используйте ее, чтобы улучшить свои навыки программирования!*" >> $GITHUB_STEP_SUMMARY
